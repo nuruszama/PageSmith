@@ -9,14 +9,14 @@ from PySide6.QtGui import (
     QIcon, QKeySequence, QDragEnterEvent, QDropEvent
 )
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QToolBar, QFileDialog, QSplitter, QListWidget, QListWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QTabWidget, QGraphicsView,
+    QTreeWidget, QTreeWidgetItem, QTabWidget, QStackedWidget, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
     QLineEdit, QPushButton, QLabel, QSpinBox, QStatusBar
 )
 
-APP_VERSION = "v0.2.3"
+APP_VERSION = "v0.2.5"
 GITHUB_REPO = "nuruszama/PageSmith"
 
 
@@ -54,6 +54,10 @@ class PageSmithContext:
 
     def open_file(self, path: str):
         self.window.open_file(path)
+
+    def add_welcome_action(self, label: str, callback, primary: bool = False) -> QPushButton:
+        """Allows modules (e.g., pdfeditor.py) to add action buttons directly to the Welcome Screen."""
+        return self.window.add_welcome_button(label, callback, primary=primary)
 
     def reload_current_tab(self):
         """Re-opens the active PDF from disk after an editor module modifies pages/annotations."""
@@ -365,7 +369,7 @@ class DocumentTab(QWidget):
 
 
 class MainWindow(QMainWindow):
-    tab_changed = Signal(object)  # Emits active DocumentTab (or None) for plugins
+    tab_changed = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -378,12 +382,19 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon_file):
             self.setWindowIcon(QIcon(icon_file))
 
+        # Central stack: index 0 = Welcome Screen, index 1 = Active Document Tabs
+        self.central_stack = QStackedWidget()
+        self.welcome_widget = self._build_welcome_screen(icon_file)
+        self.central_stack.addWidget(self.welcome_widget)
+
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._sync_page_controls)
-        self.setCentralWidget(self.tabs)
+        self.central_stack.addWidget(self.tabs)
+
+        self.setCentralWidget(self.central_stack)
 
         self.status = QStatusBar()
         self.lbl_version = QLabel(f" {APP_VERSION} ")
@@ -395,6 +406,118 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._load_modules()
+
+    def _build_welcome_screen(self, icon_file: str) -> QWidget:
+        screen = QWidget()
+        screen.setStyleSheet("""
+            QWidget {
+                background-color: #23272e;
+                color: #e6edf3;
+            }
+            QLabel#titleLabel {
+                font-size: 28px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+            QLabel#subtitleLabel {
+                font-size: 14px;
+                color: #9da7b3;
+            }
+            QLabel#hintLabel {
+                font-size: 12px;
+                color: #768390;
+                margin-top: 12px;
+            }
+        """)
+
+        outer = QVBoxLayout(screen)
+        outer.setAlignment(Qt.AlignCenter)
+        outer.setSpacing(12)
+
+        if os.path.exists(icon_file):
+            logo_lbl = QLabel()
+            pix = QPixmap(icon_file).scaled(104, 104, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_lbl.setPixmap(pix)
+            logo_lbl.setAlignment(Qt.AlignCenter)
+            outer.addWidget(logo_lbl)
+
+        title_lbl = QLabel("PageSmith")
+        title_lbl.setObjectName("titleLabel")
+        title_lbl.setAlignment(Qt.AlignCenter)
+        outer.addWidget(title_lbl)
+
+        sub_lbl = QLabel(f"Portable 64-Bit PDF Studio by Abdul Samad  •  {APP_VERSION}")
+        sub_lbl.setObjectName("subtitleLabel")
+        sub_lbl.setAlignment(Qt.AlignCenter)
+        outer.addWidget(sub_lbl)
+
+        outer.addSpacing(16)
+
+        self.welcome_btn_row = QHBoxLayout()
+        self.welcome_btn_row.setAlignment(Qt.AlignCenter)
+        self.welcome_btn_row.setSpacing(14)
+
+        btn_open = QPushButton("  Open PDF...  ")
+        btn_open.setCursor(Qt.PointingHandCursor)
+        btn_open.setStyleSheet("""
+            QPushButton {
+                background-color: #e67e22;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 11px 24px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover { background-color: #f39c12; }
+            QPushButton:pressed { background-color: #d35400; }
+        """)
+        btn_open.clicked.connect(self.open_pdf_dialog)
+        self.welcome_btn_row.addWidget(btn_open)
+
+        outer.addLayout(self.welcome_btn_row)
+
+        hint_lbl = QLabel("Tip: You can also drag and drop any PDF file anywhere onto this window")
+        hint_lbl.setObjectName("hintLabel")
+        hint_lbl.setAlignment(Qt.AlignCenter)
+        outer.addWidget(hint_lbl)
+
+        return screen
+
+    def add_welcome_button(self, label: str, callback, primary: bool = False) -> QPushButton:
+        """Adds an action button to the Welcome Screen (used by updater, pdfeditor, etc.)."""
+        btn = QPushButton(f"  {label}  ")
+        btn.setCursor(Qt.PointingHandCursor)
+        if primary:
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e67e22;
+                    color: #ffffff;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 11px 24px;
+                    border-radius: 6px;
+                    border: none;
+                }
+                QPushButton:hover { background-color: #f39c12; }
+            """)
+        else:
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #30363d;
+                    color: #e6edf3;
+                    font-size: 14px;
+                    font-weight: 600;
+                    padding: 11px 22px;
+                    border-radius: 6px;
+                    border: 1px solid #484f58;
+                }
+                QPushButton:hover { background-color: #3c444d; border-color: #8b949e; }
+                QPushButton:pressed { background-color: #282e34; }
+            """)
+        btn.clicked.connect(callback)
+        self.welcome_btn_row.addWidget(btn)
+        return btn
 
     def _build_toolbar(self):
         tb = QToolBar("Reader Toolbar")
@@ -470,18 +593,30 @@ class MainWindow(QMainWindow):
         tb.addWidget(btn_find)
 
     def _load_modules(self):
-        """Auto-discovers and registers every plugin module inside modules/."""
+        """Loads bundled core modules (PyInstaller-safe) and auto-discovers any extra plugins in modules/."""
         ctx = PageSmithContext(self)
+        loaded_names = set()
+
+        bundled_modules = ["modules.updater"]
+        for full_name in bundled_modules:
+            try:
+                mod = importlib.import_module(full_name)
+                if hasattr(mod, "register"):
+                    self.loaded_plugins.append(mod.register(ctx))
+                    loaded_names.add(full_name.split(".")[-1])
+            except Exception as exc:
+                self.status.showMessage(f"Module load error ({full_name}): {exc}")
+
         try:
             import modules
             for _, mod_name, is_pkg in pkgutil.iter_modules(modules.__path__):
-                if is_pkg or mod_name.startswith("_"):
+                if is_pkg or mod_name.startswith("_") or mod_name in loaded_names:
                     continue
                 mod = importlib.import_module(f"modules.{mod_name}")
                 if hasattr(mod, "register"):
-                    plugin_instance = mod.register(ctx)
-                    self.loaded_plugins.append(plugin_instance)
-        except ImportError:
+                    self.loaded_plugins.append(mod.register(ctx))
+                    loaded_names.add(mod_name)
+        except Exception:
             pass
 
     def current_tab(self) -> DocumentTab | None:
@@ -498,6 +633,7 @@ class MainWindow(QMainWindow):
         name = os.path.basename(path)
         idx = self.tabs.addTab(tab, name)
         self.tabs.setCurrentIndex(idx)
+        self.central_stack.setCurrentWidget(self.tabs)
         self._sync_page_controls()
         self.status.showMessage(f"Opened {name} ({len(tab.doc)} pages)")
 
@@ -512,14 +648,16 @@ class MainWindow(QMainWindow):
         tab = self.current_tab()
         self.page_spin.blockSignals(True)
         if tab:
+            self.central_stack.setCurrentWidget(self.tabs)
             total = len(tab.doc)
             self.page_spin.setMaximum(max(1, total))
             self.page_spin.setValue(tab.canvas.page_index + 1)
             self.lbl_total_pages.setText(f" / {total} ")
             self.lbl_zoom.setText(f"Zoom: {int((tab.canvas.target_zoom / 1.5) * 100)}%")
             pdf_name = os.path.basename(tab.file_path)
-            self.setWindowTitle(f"{pdf_name} — PageSmith by Abdul Samad")
+            self.setWindowTitle(f"{pdf_name} - PageSmith by Abdul Samad")
         else:
+            self.central_stack.setCurrentWidget(self.welcome_widget)
             self.page_spin.setMaximum(1)
             self.page_spin.setValue(1)
             self.lbl_total_pages.setText(" / 0 ")

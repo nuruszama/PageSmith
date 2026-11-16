@@ -116,6 +116,9 @@ class UpdaterPlugin:
         act_update.triggered.connect(lambda: self.check_for_updates(manual=True))
         ctx.toolbar.addAction(act_update)
 
+        # Also add directly to the Welcome Screen
+        ctx.add_welcome_action("Check Updates", lambda: self.check_for_updates(manual=True))
+
         # Silent check 2 seconds after startup
         QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
 

@@ -46,7 +46,7 @@ class UpdateCheckWorker(QThread):
                     self.up_to_date.emit(self.current_version)
                 return
 
-            target_asset = "PageSmith.exe" if sys.platform == "win32" else "PageSmith-Linux-x86_64"
+            target_asset = "PageSmith.exe" if sys.platform == "win32" else "PageSmith"
             download_url = ""
             for asset in data.get("assets", []):
                 if asset.get("name") == target_asset:
@@ -74,6 +74,7 @@ class UpdateDownloadWorker(QThread):
         self.current_version = current_version
 
     def run(self):
+        temp_path = ""
         try:
             req = urllib.request.Request(
                 self.download_url,
@@ -90,7 +91,8 @@ class UpdateDownloadWorker(QThread):
                     while True:
                         if self.isInterruptionRequested():
                             f.close()
-                            os.remove(temp_path)
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
                             return
                         chunk = resp.read(65536)
                         if not chunk:
@@ -100,8 +102,17 @@ class UpdateDownloadWorker(QThread):
                         if total_size > 0:
                             self.progress.emit(int((downloaded / total_size) * 100))
 
+            # Sanity check: reject truncated downloads or HTML error pages
+            if downloaded < 5 * 1024 * 1024 or (total_size > 0 and downloaded != total_size):
+                raise RuntimeError(f"Incomplete binary download ({downloaded} bytes received).")
+
             self.finished.emit(temp_path)
         except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
             self.failed.emit(str(exc))
 
 
@@ -116,7 +127,6 @@ class UpdaterPlugin:
         act_update.triggered.connect(lambda: self.check_for_updates(manual=True))
         ctx.toolbar.addAction(act_update)
 
-        # Also add directly to the Welcome Screen
         ctx.add_welcome_action("Check Updates", lambda: self.check_for_updates(manual=True))
 
         # Silent check 2 seconds after startup
@@ -182,7 +192,9 @@ class UpdaterPlugin:
         self._downloader.start()
 
     def _apply_binary_replacement(self, new_bin_path: str):
-        current_exe = os.path.abspath(sys.executable)
+        # Use sys.argv[0] so --onefile resolves the real outer .exe path rather than _MEIPASS
+        current_exe = os.path.abspath(sys.argv[0] if getattr(sys, "frozen", False) else sys.executable)
+
         reopen_args = []
         for i in range(self.ctx.tabs.count()):
             tab = self.ctx.tabs.widget(i)
@@ -190,12 +202,19 @@ class UpdaterPlugin:
                 reopen_args.append(tab.file_path)
                 tab.doc.close()
 
+        # Strip PyInstaller _MEIPASS environment variables so the restarted app extracts cleanly
+        clean_env = os.environ.copy()
+        clean_env.pop("_MEIPASS", None)
+        clean_env.pop("_MEIPASS2", None)
+
         if sys.platform == "win32":
             bat_fd, bat_path = tempfile.mkstemp(prefix="pagesmith_swap_", suffix=".bat")
             os.close(bat_fd)
             quoted_args = " ".join(f'"{p}"' for p in reopen_args)
             bat_script = (
                 "@echo off\r\n"
+                "set _MEIPASS=\r\n"
+                "set _MEIPASS2=\r\n"
                 "timeout /t 2 /nobreak > nul\r\n"
                 ":retry\r\n"
                 f'move /y "{new_bin_path}" "{current_exe}" > nul 2>&1\r\n'
@@ -211,13 +230,14 @@ class UpdaterPlugin:
 
             subprocess.Popen(
                 ["cmd.exe", "/c", bat_path],
+                env=clean_env,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
             )
             QApplication.quit()
         else:
             os.chmod(new_bin_path, 0o755)
             shutil.move(new_bin_path, current_exe)
-            os.execv(current_exe, [current_exe] + reopen_args)
+            os.execve(current_exe, [current_exe] + reopen_args, clean_env)
 
 
 def register(ctx):

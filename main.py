@@ -1,7 +1,7 @@
 import sys
 import os
 import pymupdf
-from PySide6.QtCore import Qt, QRectF, QSize, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QRectF, QPointF, QSize, QTimer, QThread, Signal
 from PySide6.QtGui import (
     QAction, QImage, QPixmap, QPainter, QPen, QColor, QBrush,
     QIcon, QKeySequence, QDragEnterEvent, QDropEvent
@@ -21,16 +21,17 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
-class PageRenderWorker(QThread):
-    """Renders high-DPI PDF page bitmaps off the main UI thread so dragging never freezes."""
-    finished = Signal(int, float, QImage)  # page_index, rendered_zoom, image
+class TileRenderWorker(QThread):
+    """Renders ONLY the visible viewport rectangle at full target_zoom (up to 12x) off the UI thread."""
+    finished = Signal(int, float, pymupdf.Rect, QImage)
 
-    def __init__(self, file_path: str, page_index: int, zoom: float, rotation: int):
+    def __init__(self, file_path: str, page_index: int, zoom: float, rotation: int, clip_rect: pymupdf.Rect):
         super().__init__()
         self.file_path = file_path
         self.page_index = page_index
         self.zoom = zoom
         self.rotation = rotation
+        self.clip_rect = clip_rect
 
     def run(self):
         try:
@@ -39,14 +40,13 @@ class PageRenderWorker(QThread):
                 page = doc[self.page_index]
                 page.set_rotation(self.rotation)
                 mat = pymupdf.Matrix(self.zoom, self.zoom)
-                pix = page.get_pixmap(matrix=mat, alpha=False)
-                # Copy image bytes safely before closing thread-local document
+                pix = page.get_pixmap(matrix=mat, clip=self.clip_rect, alpha=False)
                 img = QImage(
                     pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888
                 ).copy()
                 doc.close()
                 if not self.isInterruptionRequested():
-                    self.finished.emit(self.page_index, self.zoom, img)
+                    self.finished.emit(self.page_index, self.zoom, self.clip_rect, img)
             else:
                 doc.close()
         except Exception:
@@ -54,7 +54,7 @@ class PageRenderWorker(QThread):
 
 
 class PdfReaderCanvas(QGraphicsView):
-    """64-bit PDF viewport with instant GPU zoom and debounced async high-DPI sharpening."""
+    """64-bit PDF viewport with instant GPU zoom + razor-sharp viewport tile sharpening up to 12x."""
     zoom_changed = Signal(float)
 
     def __init__(self, file_path: str, doc: pymupdf.Document, page_index: int = 0):
@@ -63,9 +63,9 @@ class PdfReaderCanvas(QGraphicsView):
         self.doc = doc
         self.page_index = page_index
         self.target_zoom = 1.5
-        self.rendered_zoom = 1.5
+        self.base_zoom = 1.5
         self.search_rects: list[pymupdf.Rect] = []
-        self._worker: PageRenderWorker | None = None
+        self._worker: TileRenderWorker | None = None
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -75,65 +75,80 @@ class PdfReaderCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(QBrush(QColor(45, 45, 48)))
 
-        # Debounce timer: waits 180ms after wheel zoom stops before sharp async re-render
+        self.base_pixmap_item: QGraphicsPixmapItem | None = None
+        self.hd_tile_item: QGraphicsPixmapItem | None = None
+
+        # Debounce timer triggers 150ms after zooming OR panning stops
         self._sharpen_timer = QTimer(self)
         self._sharpen_timer.setSingleShot(True)
-        self._sharpen_timer.setInterval(180)
-        self._sharpen_timer.timeout.connect(self.request_sharp_render)
+        self._sharpen_timer.setInterval(150)
+        self._sharpen_timer.timeout.connect(self.request_hd_viewport_tile)
 
-        self.pixmap_item: QGraphicsPixmapItem | None = None
+        self.horizontalScrollBar().valueChanged.connect(self._on_viewport_moved)
+        self.verticalScrollBar().valueChanged.connect(self._on_viewport_moved)
+
         self.render_page_sync()
 
+    def _on_viewport_moved(self):
+        if self.target_zoom > self.base_zoom * 1.05:
+            self._sharpen_timer.start()
+
+    def _clear_hd_tile(self):
+        if self.hd_tile_item:
+            self._scene.removeItem(self.hd_tile_item)
+            self.hd_tile_item = None
+
     def _draw_search_overlays(self):
-        # Remove existing search highlight items
         for item in list(self._scene.items()):
-            if item is not self.pixmap_item:
+            if item not in (self.base_pixmap_item, self.hd_tile_item):
                 self._scene.removeItem(item)
 
         for r in self.search_rects:
             scaled = QRectF(
-                r.x0 * self.rendered_zoom,
-                r.y0 * self.rendered_zoom,
-                r.width * self.rendered_zoom,
-                r.height * self.rendered_zoom,
+                r.x0 * self.base_zoom,
+                r.y0 * self.base_zoom,
+                r.width * self.base_zoom,
+                r.height * self.base_zoom,
             )
             hl = QGraphicsRectItem(scaled)
-            hl.setPen(QPen(QColor(255, 165, 0), 2))
+            hl.setPen(QPen(QColor(255, 165, 0), 2 / (self.target_zoom / self.base_zoom)))
             hl.setBrush(QBrush(QColor(255, 230, 0, 100)))
+            hl.setZValue(10)
             self._scene.addItem(hl)
 
     def render_page_sync(self):
-        """Immediate render used only on initial page load / page switch."""
+        """Renders full-page base layer so panning anywhere on the sheet is always instant."""
         if len(self.doc) == 0:
             return
         self.resetTransform()
         self._scene.clear()
-        self.pixmap_item = None
+        self.base_pixmap_item = None
+        self.hd_tile_item = None
 
         page = self.doc[self.page_index]
-        # Cap initial/raster zoom at 4.0x to prevent giant bitmap allocations on A0 drawings
-        render_z = min(self.target_zoom, 4.0)
-        mat = pymupdf.Matrix(render_z, render_z)
+        # Base full-page layer stays lightweight (2.0x) while HD tile handles zoomed-in clarity up to 12.0x
+        self.base_zoom = 2.0
+        mat = pymupdf.Matrix(self.base_zoom, self.base_zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
 
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
         qpix = QPixmap.fromImage(img)
 
-        self.rendered_zoom = render_z
-        self.pixmap_item = QGraphicsPixmapItem(qpix)
-        self._scene.addItem(self.pixmap_item)
+        self.base_pixmap_item = QGraphicsPixmapItem(qpix)
+        self.base_pixmap_item.setZValue(0)
+        self._scene.addItem(self.base_pixmap_item)
         self._scene.setSceneRect(0, 0, qpix.width(), qpix.height())
 
-        if self.target_zoom != self.rendered_zoom:
-            ratio = self.target_zoom / self.rendered_zoom
-            self.scale(ratio, ratio)
+        ratio = self.target_zoom / self.base_zoom
+        self.scale(ratio, ratio)
 
         self._draw_search_overlays()
         self.zoom_changed.emit(self.target_zoom)
+        self._sharpen_timer.start()
 
     def set_zoom_smooth(self, new_zoom: float):
-        """Scales the GPU view immediately at 60+ FPS, then sharpens in background."""
-        new_zoom = max(0.15, min(8.0, new_zoom))
+        """Instant 60+ FPS GPU zoom with deferred ultra-sharp HD tile overlay."""
+        new_zoom = max(0.15, min(12.0, new_zoom))
         if abs(new_zoom - self.target_zoom) < 1e-4:
             return
 
@@ -143,44 +158,59 @@ class PdfReaderCanvas(QGraphicsView):
         self.zoom_changed.emit(self.target_zoom)
         self._sharpen_timer.start()
 
-    def request_sharp_render(self):
-        if len(self.doc) == 0:
+    def request_hd_viewport_tile(self):
+        """Renders ONLY the visible area on screen at full target_zoom (up to 12x) for razor-sharp CAD text."""
+        if len(self.doc) == 0 or not self.base_pixmap_item:
             return
-        desired_raster = min(self.target_zoom, 4.0)
-        if abs(desired_raster - self.rendered_zoom) < 0.05:
+
+        # Map visible viewport bounds back into PDF page coordinates (points)
+        visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
+        inv = 1.0 / self.base_zoom
+        page_rect = self.doc[self.page_index].rect
+
+        # Add a 15% margin around the viewport so slight drags stay crisp immediately
+        pad_x = visible_scene.width() * inv * 0.15
+        pad_y = visible_scene.height() * inv * 0.15
+
+        clip = pymupdf.Rect(
+            max(page_rect.x0, visible_scene.left() * inv - pad_x),
+            max(page_rect.y0, visible_scene.top() * inv - pad_y),
+            min(page_rect.x1, visible_scene.right() * inv + pad_x),
+            min(page_rect.y1, visible_scene.bottom() * inv + pad_y),
+        )
+
+        if clip.is_empty or clip.width < 2 or clip.height < 2:
             return
 
         if self._worker and self._worker.isRunning():
             self._worker.requestInterruption()
+            self._worker.wait(50)
 
         rotation = self.doc[self.page_index].rotation
-        self._worker = PageRenderWorker(self.file_path, self.page_index, desired_raster, rotation)
-        self._worker.finished.connect(self._on_async_render_ready)
+        self._worker = TileRenderWorker(self.file_path, self.page_index, self.target_zoom, rotation, clip)
+        self._worker.finished.connect(self._on_hd_tile_ready)
         self._worker.start()
 
-    def _on_async_render_ready(self, page_idx: int, rendered_z: float, img: QImage):
-        if page_idx != self.page_index or not self.pixmap_item:
+    def _on_hd_tile_ready(self, page_idx: int, rendered_z: float, clip: pymupdf.Rect, img: QImage):
+        if page_idx != self.page_index or not self.base_pixmap_item:
+            return
+        # Ignore stale tiles if user zoomed again while worker was finishing
+        if abs(rendered_z - self.target_zoom) > 0.05:
             return
 
-        # Preserve exact center viewport point while swapping crisp pixmap
-        center_scene = self.mapToScene(self.viewport().rect().center())
-        rel_x = center_scene.x() / max(1.0, self._scene.width())
-        rel_y = center_scene.y() / max(1.0, self._scene.height())
-
+        self._clear_hd_tile()
         qpix = QPixmap.fromImage(img)
-        self.pixmap_item.setPixmap(qpix)
-        self.rendered_zoom = rendered_z
-        self._scene.setSceneRect(0, 0, qpix.width(), qpix.height())
+        self.hd_tile_item = QGraphicsPixmapItem(qpix)
+        self.hd_tile_item.setZValue(1)
 
-        self.resetTransform()
-        ratio = self.target_zoom / self.rendered_zoom
-        self.scale(ratio, ratio)
-
-        self._draw_search_overlays()
-        self.centerOn(rel_x * qpix.width(), rel_y * qpix.height())
+        # Position and scale the HD tile so it aligns to the exact sub-pixel on the base scene
+        self.hd_tile_item.setPos(clip.x0 * self.base_zoom, clip.y0 * self.base_zoom)
+        tile_scale = self.base_zoom / rendered_z
+        self.hd_tile_item.setScale(tile_scale)
+        self._scene.addItem(self.hd_tile_item)
 
     def fit_width(self):
-        if not self.pixmap_item:
+        if not self.base_pixmap_item:
             return
         page_width_pts = self.doc[self.page_index].rect.width
         if page_width_pts > 0:
@@ -188,7 +218,7 @@ class PdfReaderCanvas(QGraphicsView):
             self.set_zoom_smooth(avail_w / page_width_pts)
 
     def fit_page(self):
-        if not self.pixmap_item:
+        if not self.base_pixmap_item:
             return
         rect = self.doc[self.page_index].rect
         if rect.width > 0 and rect.height > 0:
@@ -198,7 +228,6 @@ class PdfReaderCanvas(QGraphicsView):
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
-            # Fine-grained smooth scroll step (handles both mouse wheels & precision trackpads)
             angle = event.angleDelta().y()
             if angle != 0:
                 factor = 1.0015 ** angle

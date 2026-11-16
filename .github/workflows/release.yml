@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v0.1.0)'
+        description: 'Release tag (e.g., v0.2.0)'
         required: true
-        default: 'v0.1.0'
+        default: 'v0.2.0'
 
 permissions:
   contents: write
@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: PageSmith-Windows.exe
+            artifact_name: PageSmith.exe
             built_path: dist/PageSmith.exe
           - os: ubuntu-latest
             artifact_name: PageSmith-Linux-x86_64
@@ -49,11 +49,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Compile portable binary with PyInstaller
+      - name: Generate Windows ICO and Compile Binary
+        shell: bash
         run: |
-          pyinstaller --noconfirm --windowed --onefile --clean --name PageSmith main.py
+          ICON_ARGS=""
+          if [ -f "assets/icon.png" ]; then
+            python -c "from PIL import Image; img = Image.open('assets/icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              ICON_ARGS="--icon=assets/icon.ico --add-data assets/icon.png;assets"
+            else
+              ICON_ARGS="--add-data assets/icon.png:assets"
+            fi
+          fi
+          pyinstaller --noconfirm --windowed --onefile --clean $ICON_ARGS --name PageSmith main.py
 
-      - name: Rename binary for release
+      - name: Move binary for release
         shell: bash
         run: |
           mv "${{ matrix.built_path }}" "${{ matrix.artifact_name }}"

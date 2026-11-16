@@ -535,9 +535,19 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    # Force Windows 11 taskbar to use PageSmith's custom icon instead of generic executable icon
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("nuruszama.PageSmith.Desktop.1")
+
     app = QApplication(sys.argv)
     app.setApplicationName("PageSmith")
     app.setStyle("Fusion")
+
+    icon_file = resource_path("assets/icon.png")
+    if os.path.exists(icon_file):
+        app.setWindowIcon(QIcon(icon_file))
+
     window = MainWindow()
     window.show()
 

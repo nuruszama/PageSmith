@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v0.2.0)'
+        description: 'Release tag (e.g., v0.2.3)'
         required: true
-        default: 'v0.2.0'
+        default: 'v0.2.3'
 
 permissions:
   contents: write
@@ -24,7 +24,7 @@ jobs:
             artifact_name: PageSmith.exe
             built_path: dist/PageSmith.exe
           - os: ubuntu-latest
-            artifact_name: PageSmith-Linux-x86_64
+            artifact_name: PageSmith
             built_path: dist/PageSmith
 
     runs-on: ${{ matrix.os }}
@@ -49,25 +49,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate Windows ICO and Compile Binary
+      - name: Stamp Version, Generate ICO, and Compile Binary
         shell: bash
         run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          sed -i "s/^APP_VERSION = .*/APP_VERSION = \"${TAG}\"/" main.py
+
           if [ -f "assets/icon.png" ]; then
             python -c "from PIL import Image; img = Image.open('assets/icon.png').convert('RGBA'); img.save('assets/icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
             if [[ "${{ runner.os }}" == "Windows" ]]; then
-              pyinstaller --noconfirm --windowed --onefile --clean --icon="assets/icon.ico" --add-data "assets/icon.png;assets" --name PageSmith main.py
+              pyinstaller --noconfirm --windowed --onefile --clean --collect-submodules modules --icon="assets/icon.ico" --add-data "assets/icon.png;assets" --name PageSmith main.py
             else
-              pyinstaller --noconfirm --windowed --onefile --clean --add-data "assets/icon.png:assets" --name PageSmith main.py
+              pyinstaller --noconfirm --windowed --onefile --clean --collect-submodules modules --add-data "assets/icon.png:assets" --name PageSmith main.py
             fi
           else
             echo "WARNING: assets/icon.png not found!"
-            pyinstaller --noconfirm --windowed --onefile --clean --name PageSmith main.py
+            pyinstaller --noconfirm --windowed --onefile --clean --collect-submodules modules --name PageSmith main.py
           fi
 
       - name: Move binary for release
         shell: bash
         run: |
-          mv "${{ matrix.built_path }}" "${{ matrix.artifact_name }}"
+          if [ "${{ matrix.built_path }}" != "${{ matrix.artifact_name }}" ]; then
+            mv "${{ matrix.built_path }}" "${{ matrix.artifact_name }}"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -99,6 +104,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: "PageSmith ${{ steps.tag.outputs.name }}"
+          generate_release_notes: true
           draft: false
           prerelease: false
           files: release-files/*

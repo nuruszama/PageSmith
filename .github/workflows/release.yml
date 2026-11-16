@@ -52,16 +52,17 @@ jobs:
       - name: Generate Windows ICO and Compile Binary
         shell: bash
         run: |
-          ICON_ARGS=""
           if [ -f "assets/icon.png" ]; then
-            python -c "from PIL import Image; img = Image.open('assets/icon.png'); img.save('assets/icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+            python -c "from PIL import Image; img = Image.open('assets/icon.png').convert('RGBA'); img.save('assets/icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
             if [[ "${{ runner.os }}" == "Windows" ]]; then
-              ICON_ARGS="--icon=assets/icon.ico --add-data assets/icon.png;assets"
+              pyinstaller --noconfirm --windowed --onefile --clean --icon="assets/icon.ico" --add-data "assets/icon.png;assets" --name PageSmith main.py
             else
-              ICON_ARGS="--add-data assets/icon.png:assets"
+              pyinstaller --noconfirm --windowed --onefile --clean --add-data "assets/icon.png:assets" --name PageSmith main.py
             fi
+          else
+            echo "WARNING: assets/icon.png not found!"
+            pyinstaller --noconfirm --windowed --onefile --clean --name PageSmith main.py
           fi
-          pyinstaller --noconfirm --windowed --onefile --clean $ICON_ARGS --name PageSmith main.py
 
       - name: Move binary for release
         shell: bash

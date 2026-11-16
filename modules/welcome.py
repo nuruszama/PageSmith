@@ -1,7 +1,9 @@
 import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import (
+    QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel, QPushButton
+)
 
 
 class WelcomePlugin:
@@ -22,10 +24,30 @@ class WelcomePlugin:
                 font-size: 14px;
                 color: #9da7b3;
             }
-            QLabel#hintLabel {
+            QFrame#shortcutCard {
+                background-color: #1c2026;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+            }
+            QLabel#cardHeader {
+                font-size: 13px;
+                font-weight: bold;
+                color: #e67e22;
+                background: transparent;
+            }
+            QLabel#actionText {
                 font-size: 12px;
-                color: #768390;
-                margin-top: 12px;
+                color: #c9d1d9;
+                background: transparent;
+            }
+            QLabel#keyBadge {
+                font-size: 11px;
+                font-weight: 600;
+                color: #f0f6fc;
+                background-color: #2d333b;
+                border: 1px solid #444c56;
+                border-radius: 4px;
+                padding: 3px 8px;
             }
         """)
 
@@ -51,23 +73,57 @@ class WelcomePlugin:
         sub_lbl.setAlignment(Qt.AlignCenter)
         outer.addWidget(sub_lbl)
 
-        outer.addSpacing(16)
+        outer.addSpacing(14)
 
         self.btn_row = QHBoxLayout()
         self.btn_row.setAlignment(Qt.AlignCenter)
         self.btn_row.setSpacing(14)
         outer.addLayout(self.btn_row)
 
-        hint_lbl = QLabel("Tip: You can also drag and drop any PDF file anywhere onto this window")
-        hint_lbl.setObjectName("hintLabel")
-        hint_lbl.setAlignment(Qt.AlignCenter)
-        outer.addWidget(hint_lbl)
+        outer.addSpacing(22)
+        outer.addWidget(self._build_shortcuts_card(), alignment=Qt.AlignCenter)
 
-        # Register handler so other plugins can add buttons cleanly
         ctx.window._welcome_button_handler = self.add_button
-
-        # Default primary Open PDF button
         self.add_button("Open PDF...", ctx.window.open_pdf_dialog, primary=True)
+
+    def _build_shortcuts_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("shortcutCard")
+        card.setFixedWidth(500)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("Keyboard Shortcuts & Controls")
+        header.setObjectName("cardHeader")
+        layout.addWidget(header)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(8)
+
+        shortcuts = [
+            ("Open PDF(s)", "Ctrl + O  or  Drag & Drop"),
+            ("Smooth Zoom In / Out", "Ctrl + Mouse Wheel  /  Ctrl + + / -"),
+            ("Pan Canvas", "Click & Drag"),
+            ("Next / Previous Page", "Page Down  /  Page Up"),
+            ("Find Text", "Ctrl + F"),
+        ]
+
+        for row, (action, keys) in enumerate(shortcuts):
+            lbl_act = QLabel(action)
+            lbl_act.setObjectName("actionText")
+
+            lbl_key = QLabel(keys)
+            lbl_key.setObjectName("keyBadge")
+            lbl_key.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            grid.addWidget(lbl_act, row, 0, Qt.AlignLeft)
+            grid.addWidget(lbl_key, row, 1, Qt.AlignRight)
+
+        layout.addLayout(grid)
+        return card
 
     def add_button(self, label: str, callback, primary: bool = False) -> QPushButton:
         btn = QPushButton(f"  {label}  ")

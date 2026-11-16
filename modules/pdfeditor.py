@@ -10,8 +10,8 @@ class PdfEditorPlugin:
     def __init__(self, ctx):
         self.ctx = ctx
 
-        # Add "Create Blank PDF" directly to the Welcome Screen
-        ctx.add_welcome_action("Create Blank PDF", self.create_blank_pdf, primary=False)
+        # Add "Edit PDF" directly to the Welcome Screen
+        ctx.add_welcome_action("Edit PDF", self.open_pdf_to_edit, primary=False)
 
         # Add Editor Dropdown Menu to the Main Toolbar
         ctx.toolbar.addSeparator()
@@ -70,6 +70,16 @@ class PdfEditorPlugin:
         os.replace(temp_path, tab.file_path)
         tab.doc = pymupdf.open(tab.file_path)
         self.ctx.reload_current_tab()
+
+    def open_pdf_to_edit(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self.ctx.window, "Select PDF to Edit", "", "PDF Files (*.pdf)"
+        )
+        if path:
+            self.ctx.open_file(path)
+            self.ctx.status_bar.showMessage(
+                f"Editing '{os.path.basename(path)}' — Use 'Edit & Sign ▾' in the top toolbar."
+            )
 
     def create_blank_pdf(self):
         save_path, _ = QFileDialog.getSaveFileName(

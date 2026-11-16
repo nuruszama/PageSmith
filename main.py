@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 import modules
 
-APP_VERSION = "v0.3.0"
+APP_VERSION = "v0.3.2"
 GITHUB_REPO = "nuruszama/PageSmith"
 
 
@@ -416,6 +416,9 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._load_modules()
+        self._build_toolbar()
+        self._load_modules()
+        self.main_toolbar.setVisible(False)
 
     def _build_toolbar(self):
         tb = QToolBar("Reader Toolbar")
@@ -426,6 +429,7 @@ class MainWindow(QMainWindow):
         act_open = QAction("Open PDF", self)
         act_open.setShortcut(QKeySequence.Open)
         act_open.triggered.connect(self.open_pdf_dialog)
+        self.addAction(act_open)
         tb.addAction(act_open)
 
         tb.addSeparator()
@@ -523,6 +527,7 @@ class MainWindow(QMainWindow):
         tab = self.current_tab()
         self.page_spin.blockSignals(True)
         if tab:
+            self.main_toolbar.setVisible(True)
             self.central_stack.setCurrentWidget(self.tabs)
             total = len(tab.doc)
             self.page_spin.setMaximum(max(1, total))
@@ -532,6 +537,7 @@ class MainWindow(QMainWindow):
             pdf_name = os.path.basename(tab.file_path)
             self.setWindowTitle(f"{pdf_name} - PageSmith by Abdul Samad")
         else:
+            self.main_toolbar.setVisible(False)
             self.central_stack.setCurrentWidget(self.welcome_slot)
             self.page_spin.setMaximum(1)
             self.page_spin.setValue(1)

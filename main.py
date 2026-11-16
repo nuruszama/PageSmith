@@ -1,7 +1,9 @@
 import sys
 import os
+import pkgutil
+import importlib
 import pymupdf
-from PySide6.QtCore import Qt, QRectF, QPointF, QSize, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QRectF, QSize, QTimer, QThread, Signal
 from PySide6.QtGui import (
     QAction, QImage, QPixmap, QPainter, QPen, QColor, QBrush,
     QIcon, QKeySequence, QDragEnterEvent, QDropEvent
@@ -14,11 +16,61 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QSpinBox, QStatusBar
 )
 
+APP_VERSION = "v0.2.3"
+GITHUB_REPO = "nuruszama/PageSmith"
+
 
 def resource_path(relative_path: str) -> str:
     """Resolve bundled asset paths inside PyInstaller --onefile or source runs."""
     base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
     return os.path.join(base_path, relative_path)
+
+
+class PageSmithContext:
+    """Clean API bridge passed to every plugin inside modules/."""
+    def __init__(self, main_window: "MainWindow"):
+        self.window = main_window
+        self.app_version = APP_VERSION
+        self.github_repo = GITHUB_REPO
+
+    @property
+    def toolbar(self) -> QToolBar:
+        return self.window.main_toolbar
+
+    @property
+    def tabs(self) -> QTabWidget:
+        return self.window.tabs
+
+    @property
+    def status_bar(self) -> QStatusBar:
+        return self.window.status
+
+    def current_tab(self) -> "DocumentTab | None":
+        return self.window.current_tab()
+
+    def current_canvas(self) -> "PdfReaderCanvas | None":
+        tab = self.window.current_tab()
+        return tab.canvas if tab else None
+
+    def open_file(self, path: str):
+        self.window.open_file(path)
+
+    def reload_current_tab(self):
+        """Re-opens the active PDF from disk after an editor module modifies pages/annotations."""
+        tab = self.window.current_tab()
+        if not tab:
+            return
+        saved_page = tab.canvas.page_index
+        saved_zoom = tab.canvas.target_zoom
+        tab.doc.close()
+        tab.doc = pymupdf.open(tab.file_path)
+        tab.canvas.doc = tab.doc
+        tab.canvas.page_index = min(saved_page, max(0, len(tab.doc) - 1))
+        tab.canvas.target_zoom = saved_zoom
+        tab.canvas.render_page_sync()
+        tab.populate_thumbnails()
+        tab.populate_toc()
+        self.window._sync_page_controls()
 
 
 class TileRenderWorker(QThread):
@@ -78,7 +130,6 @@ class PdfReaderCanvas(QGraphicsView):
         self.base_pixmap_item: QGraphicsPixmapItem | None = None
         self.hd_tile_item: QGraphicsPixmapItem | None = None
 
-        # Debounce timer triggers 150ms after zooming OR panning stops
         self._sharpen_timer = QTimer(self)
         self._sharpen_timer.setSingleShot(True)
         self._sharpen_timer.setInterval(150)
@@ -100,7 +151,7 @@ class PdfReaderCanvas(QGraphicsView):
 
     def _draw_search_overlays(self):
         for item in list(self._scene.items()):
-            if item not in (self.base_pixmap_item, self.hd_tile_item):
+            if item not in (self.base_pixmap_item, self.hd_tile_item) and item.zValue() == 10:
                 self._scene.removeItem(item)
 
         for r in self.search_rects:
@@ -117,7 +168,6 @@ class PdfReaderCanvas(QGraphicsView):
             self._scene.addItem(hl)
 
     def render_page_sync(self):
-        """Renders full-page base layer so panning anywhere on the sheet is always instant."""
         if len(self.doc) == 0:
             return
         self.resetTransform()
@@ -126,7 +176,6 @@ class PdfReaderCanvas(QGraphicsView):
         self.hd_tile_item = None
 
         page = self.doc[self.page_index]
-        # Base full-page layer stays lightweight (2.0x) while HD tile handles zoomed-in clarity up to 12.0x
         self.base_zoom = 2.0
         mat = pymupdf.Matrix(self.base_zoom, self.base_zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -147,7 +196,6 @@ class PdfReaderCanvas(QGraphicsView):
         self._sharpen_timer.start()
 
     def set_zoom_smooth(self, new_zoom: float):
-        """Instant 60+ FPS GPU zoom with deferred ultra-sharp HD tile overlay."""
         new_zoom = max(0.15, min(12.0, new_zoom))
         if abs(new_zoom - self.target_zoom) < 1e-4:
             return
@@ -159,16 +207,13 @@ class PdfReaderCanvas(QGraphicsView):
         self._sharpen_timer.start()
 
     def request_hd_viewport_tile(self):
-        """Renders ONLY the visible area on screen at full target_zoom (up to 12x) for razor-sharp CAD text."""
         if len(self.doc) == 0 or not self.base_pixmap_item:
             return
 
-        # Map visible viewport bounds back into PDF page coordinates (points)
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
         inv = 1.0 / self.base_zoom
         page_rect = self.doc[self.page_index].rect
 
-        # Add a 15% margin around the viewport so slight drags stay crisp immediately
         pad_x = visible_scene.width() * inv * 0.15
         pad_y = visible_scene.height() * inv * 0.15
 
@@ -194,7 +239,6 @@ class PdfReaderCanvas(QGraphicsView):
     def _on_hd_tile_ready(self, page_idx: int, rendered_z: float, clip: pymupdf.Rect, img: QImage):
         if page_idx != self.page_index or not self.base_pixmap_item:
             return
-        # Ignore stale tiles if user zoomed again while worker was finishing
         if abs(rendered_z - self.target_zoom) > 0.05:
             return
 
@@ -203,7 +247,6 @@ class PdfReaderCanvas(QGraphicsView):
         self.hd_tile_item = QGraphicsPixmapItem(qpix)
         self.hd_tile_item.setZValue(1)
 
-        # Position and scale the HD tile so it aligns to the exact sub-pixel on the base scene
         self.hd_tile_item.setPos(clip.x0 * self.base_zoom, clip.y0 * self.base_zoom)
         tile_scale = self.base_zoom / rendered_z
         self.hd_tile_item.setScale(tile_scale)
@@ -322,11 +365,14 @@ class DocumentTab(QWidget):
 
 
 class MainWindow(QMainWindow):
+    tab_changed = Signal(object)  # Emits active DocumentTab (or None) for plugins
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PageSmith — Portable 64-Bit PDF Reader")
+        self.setWindowTitle("PageSmith - Portable 64-Bit PDF Reader by Abdul Samad")
         self.resize(1380, 880)
         self.setAcceptDrops(True)
+        self.loaded_plugins: list = []
 
         icon_file = resource_path("assets/icon.png")
         if os.path.exists(icon_file):
@@ -340,16 +386,20 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self.status = QStatusBar()
+        self.lbl_version = QLabel(f" {APP_VERSION} ")
         self.lbl_zoom = QLabel("Zoom: 100%")
         self.status.addPermanentWidget(self.lbl_zoom)
+        self.status.addPermanentWidget(self.lbl_version)
         self.setStatusBar(self.status)
         self.status.showMessage("Ready — Open or drag & drop a PDF file")
 
         self._build_toolbar()
+        self._load_modules()
 
     def _build_toolbar(self):
         tb = QToolBar("Reader Toolbar")
         tb.setMovable(False)
+        self.main_toolbar = tb
         self.addToolBar(tb)
 
         act_open = QAction("Open PDF", self)
@@ -419,6 +469,21 @@ class MainWindow(QMainWindow):
         btn_find.clicked.connect(self.find_next)
         tb.addWidget(btn_find)
 
+    def _load_modules(self):
+        """Auto-discovers and registers every plugin module inside modules/."""
+        ctx = PageSmithContext(self)
+        try:
+            import modules
+            for _, mod_name, is_pkg in pkgutil.iter_modules(modules.__path__):
+                if is_pkg or mod_name.startswith("_"):
+                    continue
+                mod = importlib.import_module(f"modules.{mod_name}")
+                if hasattr(mod, "register"):
+                    plugin_instance = mod.register(ctx)
+                    self.loaded_plugins.append(plugin_instance)
+        except ImportError:
+            pass
+
     def current_tab(self) -> DocumentTab | None:
         w = self.tabs.currentWidget()
         return w if isinstance(w, DocumentTab) else None
@@ -453,14 +518,15 @@ class MainWindow(QMainWindow):
             self.lbl_total_pages.setText(f" / {total} ")
             self.lbl_zoom.setText(f"Zoom: {int((tab.canvas.target_zoom / 1.5) * 100)}%")
             pdf_name = os.path.basename(tab.file_path)
-            self.setWindowTitle(f"{pdf_name} — PageSmith")
+            self.setWindowTitle(f"{pdf_name} — PageSmith by Abdul Samad")
         else:
             self.page_spin.setMaximum(1)
             self.page_spin.setValue(1)
             self.lbl_total_pages.setText(" / 0 ")
             self.lbl_zoom.setText("Zoom: 100%")
-            self.setWindowTitle("PageSmith")
+            self.setWindowTitle("PageSmith - Portable 64-Bit PDF Reader by Abdul Samad")
         self.page_spin.blockSignals(False)
+        self.tab_changed.emit(tab)
 
     def _on_spin_page(self, val: int):
         tab = self.current_tab()
@@ -538,7 +604,6 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    # Force Windows 11 taskbar to use PageSmith's custom icon instead of generic executable icon
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("nuruszama.PageSmith.Desktop.1")

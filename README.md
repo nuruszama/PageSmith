@@ -35,7 +35,7 @@ Grab the latest compiled binaries directly from the **[Releases](https://github.
 | Platform | Binary | Notes |
 | :--- | :--- | :--- |
 | **Windows 11 / 10 (64-bit)** | `PageSmith.exe` | Standalone portable `.exe` — double-click or set as default `.pdf` handler |
-| **Linux (`x86_64`)** | `PageSmith-Linux-x86_64` | Run `chmod +x PageSmith-Linux-x86_64 && ./PageSmith-Linux-x86_64` |
+| **Linux (`x86_64`)** | `PageSmith` | Run `chmod +x PageSmith && ./PageSmith` |
 
 ---
 

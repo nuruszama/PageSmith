@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QSpinBox, QStatusBar
 )
 
-APP_VERSION = "v0.2.5"
+import modules.updater  # Ensures PyInstaller always bundles the updater module
+
+APP_VERSION = "v0.2.6"
 GITHUB_REPO = "nuruszama/PageSmith"
 
 

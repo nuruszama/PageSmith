@@ -452,11 +452,14 @@ class MainWindow(QMainWindow):
             self.page_spin.setValue(tab.canvas.page_index + 1)
             self.lbl_total_pages.setText(f" / {total} ")
             self.lbl_zoom.setText(f"Zoom: {int((tab.canvas.target_zoom / 1.5) * 100)}%")
+            pdf_name = os.path.basename(tab.file_path)
+            self.setWindowTitle(f"{pdf_name} — PageSmith")
         else:
             self.page_spin.setMaximum(1)
             self.page_spin.setValue(1)
             self.lbl_total_pages.setText(" / 0 ")
             self.lbl_zoom.setText("Zoom: 100%")
+            self.setWindowTitle("PageSmith")
         self.page_spin.blockSignals(False)
 
     def _on_spin_page(self, val: int):

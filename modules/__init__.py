@@ -1,20 +1,22 @@
 """
 PageSmith Central Module Registry
 ---------------------------------
-Add new feature modules here (e.g., pdfeditor, signer, takeoff) so PyInstaller
-automatically bundles them into the single-file executable without editing main.py.
+Add new feature modules here so PyInstaller automatically bundles them
+into the single-file executable without editing main.py.
 """
 from modules import welcome
-from modules import updater
+from modules import tools
 from modules import pdfeditor
-# Future modules — uncomment/add as you build them:
+from modules import updater
+
 
 def register_all(ctx) -> list:
     """Initializes and registers every bundled PageSmith plugin."""
     active_modules = [
         welcome,
-        updater,
+        tools,
         pdfeditor,
+        updater,
     ]
 
     loaded = []
